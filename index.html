@@ -3,81 +3,138 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ゼッケンQR(完全オフライン版)</title>
+    <title>QRデバッグ版</title>
+    <script src="https://cdn.jsdelivr.net"></script>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #000; color: #fff; margin: 0; }
-        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; }
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; text-align: center; }
+        #container { position: relative; width: 100vw; height: 60vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
+        /* 読み取りガイド */
         .guide {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 200px; height: 200px; border: 3px solid #0f0; border-radius: 10px;
-            box-shadow: 0 0 0 1000px rgba(0,0,0,0.5); pointer-events: none;
+            width: 200px; height: 200px; border: 3px solid #0f0; box-shadow: 0 0 20px #0f0;
+            pointer-events: none; transition: all 0.1s;
         }
-        .info { padding: 20px; background: #111; height: 30vh; }
-        #result-num { font-size: 1.8rem; font-weight: bold; color: #0f0; margin-bottom: 10px; }
-        canvas { display: none; }
+        .info { padding: 15px; height: 40vh; background: #111; border-top: 2px solid #333; }
+        .num-display { font-size: 3rem; font-weight: bold; color: #0f0; min-height: 4rem; }
+        .log { font-size: 0.8rem; color: #888; overflow-y: auto; height: 80px; text-align: left; background: #000; padding: 5px; }
+        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
     </style>
 </head>
 <body>
 
-<div id="video-container">
+<div id="flash"></div>
+<div id="container">
     <video id="video" autoplay playsinline></video>
-    <div class="guide"></div>
+    <div id="guide" class="guide"></div>
 </div>
 
 <div class="info">
-    <div id="result-num">カメラ起動中...</div>
-    <div id="status-msg">QRコードを中央の枠に合わせてください</div>
+    <div id="num-display" class="num-display">準備中...</div>
+    <div id="status">QRを枠内に入れてください</div>
+    <div id="log" class="log">システムログ:<br></div>
 </div>
 
-<canvas id="canvas"></canvas>
+<canvas id="canvas" style="display:none;"></canvas>
 
-<!-- ライブラリ本体をここに埋め込む -->
 <script>
-    /* 
-       ここに jsQR.js の中身（テキストすべて）を貼り付けてください。
-       これにより、ネットがなくてもQR認識が動くようになります。
-    */
-    
-    // --- ここから下に、先ほどのカメラ制御ロジックを記述 ---
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const numDisplay = document.getElementById('num-display');
+    const logDiv = document.getElementById('log');
+    const guide = document.getElementById('guide');
+    const flash = document.getElementById('flash');
+
+    let lastCode = "";
+    let lastTime = 0;
+
+    function addLog(msg) {
+        const time = new Date().toLocaleTimeString();
+        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
+    }
 
     async function start() {
+        addLog("カメラ初期化中...");
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', width: 1280, height: 720 } 
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
             });
             video.srcObject = stream;
-            document.getElementById('result-num').innerText = "スキャン待機中";
-            tick();
+            numDisplay.innerText = "WAITING";
+            addLog("カメラ起動成功");
+            requestAnimationFrame(tick);
         } catch (e) {
-            alert("カメラ起動失敗: " + e.message);
+            addLog("エラー: " + e.message);
         }
     }
 
     function tick() {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            canvas.width = 640; canvas.height = 480;
+            // スキャン用。解像度を下げて速度優先
+            canvas.width = 480;
+            canvas.height = 640;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            
-            // jsQRが読み込まれていれば実行
-            if (typeof jsQR !== 'undefined') {
-                const code = jsQR(imageData.data, imageData.width, imageData.height);
-                if (code && /^\d{4}$/.test(code.data)) {
-                    savePhoto(code.data);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+            if (code) {
+                // 4桁数字のみ反応
+                if (/^\d{4}$/.test(code.data)) {
+                    const now = Date.now();
+                    if (now - lastTime > 3000) { // 3秒間隔
+                        onSuccess(code.data);
+                        lastTime = now;
+                    }
+                } else {
+                    numDisplay.innerText = "ERR";
+                    document.getElementById('status').innerText = "4桁ではありません: " + code.data;
                 }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    function savePhoto(num) {
-        // 保存処理（前述のコードと同じ）
-        console.log("Saved: " + num);
-        // 連続保存防止のため一時停止などの処理をここに入れる
+    function onSuccess(val) {
+        // 1. 画面表示
+        numDisplay.innerText = val;
+        addLog(`認識成功: ${val}`);
+
+        // 2. 視覚エフェクト
+        flash.style.opacity = 1;
+        setTimeout(() => flash.style.opacity = 0, 150);
+        guide.style.borderColor = "#fff";
+        setTimeout(() => guide.style.borderColor = "#0f0", 500);
+
+        // 3. ビープ音（Androidの音量設定に依存します）
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        osc.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+
+        // 4. 保存実行
+        saveFile(val);
+    }
+
+    function saveFile(number) {
+        const d = new Date();
+        const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
+                   ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
+        
+        const fileName = `${number}_${ts}.jpeg`;
+        
+        // フル解像度で保存用キャンバスを作成
+        const saveCanvas = document.createElement('canvas');
+        saveCanvas.width = video.videoWidth;
+        saveCanvas.height = video.videoHeight;
+        saveCanvas.getContext('2d').drawImage(video, 0, 0);
+
+        const link = document.createElement('a');
+        link.download = fileName;
+        link.href = saveCanvas.toDataURL('image/jpeg', 0.8);
+        link.click();
+        addLog(`保存完了: ${fileName}`);
     }
 
     start();
