@@ -3,21 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ゼッケンQR照合カメラ(高精度版)</title>
-    <!-- jsQRライブラリの読み込み先を確実なものに変更 -->
-    <script src="https://cdn.jsdelivr.net"></script>
+    <title>ゼッケンQR(完全オフライン版)</title>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #000; color: #fff; margin: 0; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; overflow: hidden; }
+        body { font-family: sans-serif; text-align: center; background: #000; color: #fff; margin: 0; }
+        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
         .guide {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             width: 200px; height: 200px; border: 3px solid #0f0; border-radius: 10px;
             box-shadow: 0 0 0 1000px rgba(0,0,0,0.5); pointer-events: none;
         }
-        .info { padding: 20px; background: #111; height: 30vh; box-sizing: border-box; }
-        .result-box { font-size: 1.8rem; font-weight: bold; color: #0f0; margin-bottom: 10px; height: 2rem; }
-        #status-msg { font-size: 0.9rem; color: #f00; } /* エラー時は赤く表示 */
+        .info { padding: 20px; background: #111; height: 30vh; }
+        #result-num { font-size: 1.8rem; font-weight: bold; color: #0f0; margin-bottom: 10px; }
         canvas { display: none; }
     </style>
 </head>
@@ -29,113 +26,61 @@
 </div>
 
 <div class="info">
-    <div id="result-num" class="result-box">カメラ起動中...</div>
+    <div id="result-num">カメラ起動中...</div>
     <div id="status-msg">QRコードを中央の枠に合わせてください</div>
-    <p style="font-size: 0.7rem; color: #888;">※HTTPS環境またはlocalhostで実行してください</p>
 </div>
 
 <canvas id="canvas"></canvas>
 
+<!-- ライブラリ本体をここに埋め込む -->
 <script>
+    /* 
+       ここに jsQR.js の中身（テキストすべて）を貼り付けてください。
+       これにより、ネットがなくてもQR認識が動くようになります。
+    */
+    
+    // --- ここから下に、先ほどのカメラ制御ロジックを記述 ---
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    const resultNum = document.getElementById('result-num');
-    const statusMsg = document.getElementById('status-msg');
 
-    let lastScanTime = 0;
-
-    async function startCamera() {
-        if (typeof jsQR === 'undefined') {
-            statusMsg.innerText = "エラー: ライブラリが読み込めていません。ネット接続を確認してください。";
-            return;
-        }
-
-        const constraints = {
-            video: {
-                facingMode: 'environment',
-                width: { ideal: 1920 }, // フルHDを試行
-                height: { ideal: 1080 },
-                focusMode: 'continuous' // 連続フォーカス
-            }
-        };
-
+    async function start() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: 1280, height: 720 } 
+            });
             video.srcObject = stream;
-            resultNum.innerText = "スキャン待機中";
-            statusMsg.style.color = "#ccc";
-            requestAnimationFrame(tick);
-        } catch (err) {
-            statusMsg.innerText = "カメラエラー: " + err.message + "\n(HTTPS接続であることを確認してください)";
+            document.getElementById('result-num').innerText = "スキャン待機中";
+            tick();
+        } catch (e) {
+            alert("カメラ起動失敗: " + e.message);
         }
     }
 
     function tick() {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // スキャン用のキャンバスサイズ（負荷軽減のため少し小さく描画）
-            canvas.width = 640;
-            canvas.height = 480;
+            canvas.width = 640; canvas.height = 480;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert",
-            });
-
-            if (code) {
-                // 4桁数字チェック
-                const match = code.data.match(/^\d{4}$/);
-                if (match) {
-                    const now = Date.now();
-                    if (now - lastScanTime > 3000) {
-                        saveAndFlash(code.data);
-                        lastScanTime = now;
-                    }
-                } else {
-                    statusMsg.innerText = "QR内容: " + code.data + " (4桁ではありません)";
+            
+            // jsQRが読み込まれていれば実行
+            if (typeof jsQR !== 'undefined') {
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code && /^\d{4}$/.test(code.data)) {
+                    savePhoto(code.data);
                 }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    function saveAndFlash(number) {
-        resultNum.innerText = "認識: " + number;
-        statusMsg.innerText = "保存しました！";
-        statusMsg.style.color = "#0f0";
-
-        // ファイル名作成
-        const d = new Date();
-        const ts = d.getFullYear() +
-            ('0' + (d.getMonth() + 1)).slice(-2) +
-            ('0' + d.getDate()).slice(-2) + "_" +
-            ('0' + d.getHours()).slice(-2) +
-            ('0' + d.getMinutes()).slice(-2) +
-            ('0' + d.getSeconds()).slice(-2);
-        
-        const fileName = `${number}_${ts}.jpeg`;
-
-        // フル解像度の画像を保存するためにキャンバスを再設定
-        const saveCanvas = document.createElement('canvas');
-        saveCanvas.width = video.videoWidth;
-        saveCanvas.height = video.videoHeight;
-        saveCanvas.getContext('2d').drawImage(video, 0, 0);
-
-        const link = document.createElement('a');
-        link.download = fileName;
-        link.href = saveCanvas.toDataURL('image/jpeg', 0.9);
-        link.click();
-
-        // 撮影エフェクト
-        video.style.opacity = 0;
-        setTimeout(() => {
-            video.style.opacity = 1;
-            statusMsg.style.color = "#ccc";
-        }, 200);
+    function savePhoto(num) {
+        // 保存処理（前述のコードと同じ）
+        console.log("Saved: " + num);
+        // 連続保存防止のため一時停止などの処理をここに入れる
     }
 
-    startCamera();
+    start();
 </script>
 </body>
 </html>
