@@ -3,126 +3,116 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ゼッケンQR(ライブラリ内蔵)</title>
-    <!-- 外部読み込みを廃止し、下に直接プログラムを貼り付けます -->
+    <title>ゼッケン自動検知システム</title>
+    <script src="jsQR.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 65vh; background: #222; }
+        #video-container { position: relative; width: 100vw; height: 75vh; }
         video { width: 100%; height: 100%; object-fit: cover; }
+        /* どこでも検知することを強調するため枠を広めに変更 */
         .guide {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 240px; height: 240px; border: 2px solid #0f0; box-shadow: 0 0 0 4000px rgba(0,0,0,0.5); pointer-events: none;
+            position: absolute; top: 10%; left: 10%; width: 80%; height: 80%;
+            border: 1px dashed rgba(0, 255, 0, 0.3); pointer-events: none;
         }
-        .controls { padding: 10px; background: #111; height: 35vh; text-align: center; border-top: 1px solid #444; }
-        #result { font-size: 2.2rem; color: #0f0; font-weight: bold; margin: 10px 0; min-height: 2.5rem; }
-        #log { font-size: 0.75rem; color: #aaa; text-align: left; height: 80px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
+        .status-panel { padding: 10px; background: #111; height: 25vh; border-top: 2px solid #333; text-align: center; }
+        #result-val { font-size: 2.5rem; color: #0f0; font-weight: bold; margin-bottom: 5px; }
+        #log { font-size: 0.75rem; color: #888; text-align: left; height: 60px; overflow-y: auto; background: #000; padding: 5px; }
+        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
     </style>
 </head>
 <body>
 
+<div id="flash"></div>
 <div id="video-container">
     <video id="video" autoplay playsinline></video>
     <div class="guide"></div>
 </div>
 
-<div class="controls">
-    <div id="result">WAITING...</div>
-    <div id="log">システムログ:<br></div>
-    <canvas id="canvas" style="display:none;"></canvas>
+<div class="status-panel">
+    <div id="result-val">SCANNING...</div>
+    <div id="log">ログ:<br></div>
 </div>
 
-<!-- ここに jsQR ライブラリを直接流し込みます -->
-<script src="jsQR.js"></script> 
-<!-- もし上記URLが自分のリポジトリにない場合は、以下のスクリプトを有効にします -->
-<script>
-    // jsQR が読み込めていない場合の予備。本来はここに jsQR.js の中身を丸ごと貼るのがベストです。
-    if (typeof jsQR === 'undefined') {
-        document.getElementById('log').innerHTML += "<span style='color:red;'>警告: jsQRライブラリが見つかりません。</span><br>";
-    }
-</script>
+<canvas id="scan-canvas" style="display:none;"></canvas>
 
 <script>
     const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const scanCanvas = document.getElementById('scan-canvas');
+    const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
     const logDiv = document.getElementById('log');
-    const resultDiv = document.getElementById('result');
+    const resultVal = document.getElementById('result-val');
+    const flash = document.getElementById('flash');
+
+    let isProcessing = false;
 
     function addLog(msg) {
-        const time = new Date().toLocaleTimeString();
-        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
+        logDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logDiv.innerHTML;
     }
 
-    async function startCamera() {
-        addLog("カメラ起動を試行中...");
+    async function init() {
+        addLog("カメラをフル画面スキャンモードで開始...");
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+                video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
             });
             video.srcObject = stream;
-            addLog("カメラOK。スキャン開始。");
             requestAnimationFrame(tick);
         } catch (e) {
-            addLog("エラー: " + e.message);
+            addLog("カメラエラー: " + e.message);
         }
     }
 
     function tick() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // 解析用キャンバス（負荷軽減のため少し縮小）
-            canvas.width = 640;
-            canvas.height = 480;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        if (video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing) {
+            // 映像全体をスキャン対象にする
+            scanCanvas.width = video.videoWidth;
+            scanCanvas.height = video.videoHeight;
+            scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
             
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            
-            // jsQRが定義されているか再確認
-            if (window.jsQR) {
-                const code = jsQR(imageData.data, imageData.width, imageData.height);
-                if (code) {
-                    addLog("検出: " + code.data);
-                    if (/^\d{4}$/.test(code.data)) {
-                        saveAndFlash(code.data);
-                    }
-                }
+            const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert"
+            });
+
+            // 4桁の数字QRを検知した場合
+            if (code && /^\d{4}$/.test(code.data)) {
+                autoCapture(code.data);
             }
         }
         requestAnimationFrame(tick);
     }
 
-    let isCooldown = false;
-    function saveAndFlash(number) {
-        if (isCooldown) return;
-        isCooldown = true;
+    function autoCapture(number) {
+        isProcessing = true; // 連続撮影防止ロック
+        
+        resultVal.innerText = "DETECTED: " + number;
+        addLog(`★検知成功: ${number} 画像を生成中...`);
 
-        resultDiv.innerText = "CAPTURED: " + number;
-        addLog("★保存処理を開始: " + number);
+        // 視覚的エフェクト（シャッター）
+        flash.style.opacity = 1;
+        setTimeout(() => flash.style.opacity = 0, 200);
 
+        // ファイル名作成
         const d = new Date();
         const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
                    ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
-        
         const fileName = `${number}_${ts}.jpeg`;
 
-        // フル画質で保存
-        const saveCanvas = document.createElement('canvas');
-        saveCanvas.width = video.videoWidth;
-        saveCanvas.height = video.videoHeight;
-        saveCanvas.getContext('2d').drawImage(video, 0, 0);
-
+        // 映像全体を保存（検知した瞬間の静止画）
         const link = document.createElement('a');
         link.download = fileName;
-        link.href = saveCanvas.toDataURL('image/jpeg', 0.9);
+        link.href = scanCanvas.toDataURL('image/jpeg', 0.9);
         link.click();
 
-        // 3秒待機
+        // 3秒間クールダウン（同じ人を連続で撮り続けないように）
         setTimeout(() => {
-            isCooldown = false;
-            resultDiv.innerText = "WAITING...";
+            isProcessing = false;
+            resultVal.innerText = "SCANNING...";
+            addLog("スキャンを再開しました");
         }, 3000);
     }
 
-    startCamera();
+    init();
 </script>
 </body>
 </html>
