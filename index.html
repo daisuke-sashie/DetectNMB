@@ -3,16 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>複数ゼッケン同時検知システム</title>
+    <title>ゼッケン音声読取システム</title>
     <script src="jsQR.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; }
+        #video-container { position: relative; width: 100vw; height: 65vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        .info-panel { padding: 10px; background: #111; height: 30vh; border-top: 2px solid #444; }
-        #detect-list { font-size: 1.2rem; color: #0f0; font-weight: bold; margin-bottom: 5px; min-height: 1.5rem; }
-        #log { font-size: 0.75rem; color: #888; text-align: left; height: 100px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
-        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; transition: opacity 0.1s; }
+        .info-panel { padding: 10px; background: #111; height: 35vh; border-top: 2px solid #444; box-sizing: border-box; }
+        #detect-list { font-size: 2rem; color: #0f0; font-weight: bold; margin-bottom: 5px; height: 3rem; text-align: center; }
+        #log { font-size: 0.75rem; color: #888; text-align: left; height: 120px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
+        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
     </style>
 </head>
 <body>
@@ -23,7 +23,7 @@
 </div>
 
 <div class="info-panel">
-    <div id="detect-list">検知待機中...</div>
+    <div id="detect-list">READY</div>
     <div id="log">ログ:<br></div>
 </div>
 
@@ -37,22 +37,46 @@
     const detectListDiv = document.getElementById('detect-list');
     const flash = document.getElementById('flash');
 
-    // 重複保存を防ぐための管理用オブジェクト { 番号: 最後に保存した時間 }
     const savedLog = {};
-    const COOL_DOWN_MS = 5000; // 同じ番号は5秒間再保存しない
+    const COOL_DOWN_MS = 8000; // 同じ番号の再送防止（音声が重ならないよう長めに設定）
+
+    // オーディオ設定
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
     function addLog(msg) {
-        const time = new Date().toLocaleTimeString();
-        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
+        logDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logDiv.innerHTML;
+    }
+
+    // ビープ音を鳴らす関数
+    function playBeep() {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.type = 'sine';
+        osc.frequency.value = 880; // A5
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.start();
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    // 番号を読み上げる関数
+    function speakNumber(number) {
+        const uttr = new SpeechSynthesisUtterance(number);
+        uttr.lang = 'ja-JP';
+        uttr.rate = 1.2; // 少し早めに読み上げ
+        window.speechSynthesis.speak(uttr);
     }
 
     async function init() {
-        addLog("複数同時検知モード開始...");
+        addLog("システム起動中...");
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
             });
             video.srcObject = stream;
+            addLog("カメラと音声準備完了。");
             requestAnimationFrame(tick);
         } catch (e) {
             addLog("エラー: " + e.message);
@@ -66,45 +90,46 @@
             scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
             
             const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
-            
-            // jsQRは一度に1つのQRしか返さないため、
-            // 実際には映像内に複数のQRがある場合、フレームごとに異なるQRを拾う特性を利用します。
             const code = jsQR(imageData.data, imageData.width, imageData.height);
 
             if (code && /^\d{4}$/.test(code.data)) {
                 const now = Date.now();
-                const lastSaved = savedLog[code.data] || 0;
-
-                // 未保存、またはクールダウン期間を過ぎている場合のみ保存
-                if (now - lastSaved > COOL_DOWN_MS) {
-                    executeCapture(code.data);
+                if (now - (savedLog[code.data] || 0) > COOL_DOWN_MS) {
                     savedLog[code.data] = now;
+                    handleDetection(code.data);
                 }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    function executeCapture(number) {
-        detectListDiv.innerText = "CAPTURED: " + number;
-        addLog(`★新規検知保存: ${number}`);
+    function handleDetection(number) {
+        detectListDiv.innerText = number;
+        addLog(`★検知: ${number}`);
 
-        // シャッターエフェクト
-        flash.style.opacity = 0.5;
+        // 1. 即座にビープ音
+        playBeep();
+
+        // 2. シャッターエフェクト
+        flash.style.opacity = 0.4;
         setTimeout(() => flash.style.opacity = 0, 100);
 
-        const d = new Date();
-        const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
-                   ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
-        
-        const fileName = `${number}_${ts}.jpeg`;
-
-        // 検知した瞬間の映像全体を保存
+        // 3. 画像保存
+        const fileName = `${number}_${new Date().getTime()}.jpeg`;
         const link = document.createElement('a');
         link.download = fileName;
         link.href = scanCanvas.toDataURL('image/jpeg', 0.8);
         link.click();
+
+        // 4. 音声読み上げ（キューに入るので複数でも順番に話します）
+        speakNumber(number);
     }
+
+    // Android/iOSでの音声再生制限解除のため、画面タップでオーディオを有効化
+    document.body.addEventListener('click', () => {
+        audioCtx.resume();
+        addLog("オーディオ有効化済み");
+    }, { once: true });
 
     init();
 </script>
