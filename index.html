@@ -1,1 +1,119 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ゼッケンQR照合カメラ</title>
+    <!-- QRコードリーダー: jsQR (軽量・高速) -->
+    <script src="https://cdn.jsdelivr.net"></script>
+    <style>
+        body { font-family: sans-serif; text-align: center; background: #222; color: white; margin: 0; }
+        #video-container { position: relative; width: 100%; max-width: 640px; margin: auto; }
+        video { width: 100%; border-bottom: 2px solid #444; }
+        /* 読み取りガイド枠 */
+        .guide {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 250px; height: 250px; border: 2px solid #0f0; box-shadow: 0 0 15px #0f0;
+            pointer-events: none;
+        }
+        .info { padding: 15px; background: #333; }
+        .result-box { font-size: 1.5rem; font-weight: bold; color: #0f0; margin-bottom: 5px; }
+        .status { font-size: 0.9rem; color: #ccc; }
+        canvas { display: none; }
+    </style>
+</head>
+<body>
+
+<div id="video-container">
+    <video id="video" autoplay playsinline></video>
+    <div class="guide"></div>
+</div>
+
+<div class="info">
+    <div id="result-num" class="result-box">QRスキャン中...</div>
+    <div id="status-msg" class="status">4桁のQRコードを枠に入れてください</div>
+</div>
+
+<canvas id="canvas"></canvas>
+
+<script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const resultNum = document.getElementById('result-num');
+    const statusMsg = document.getElementById('status-msg');
+
+    let lastScanTime = 0;
+
+    // カメラ起動
+    async function startCamera() {
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+            });
+            video.srcObject = stream;
+            requestAnimationFrame(tick);
+        } catch (err) {
+            statusMsg.innerText = "カメラエラー: " + err.name;
+        }
+    }
+
+    function tick() {
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
+            canvas.height = video.videoHeight;
+            canvas.width = video.videoWidth;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+                inversionAttempts: "dontInvert",
+            });
+
+            if (code) {
+                // 4桁の数字かチェック
+                if (/^\d{4}$/.test(code.data)) {
+                    const now = Date.now();
+                    // 連続保存を防止 (3秒間隔)
+                    if (now - lastScanTime > 3000) {
+                        handleMatch(code.data);
+                        lastScanTime = now;
+                    }
+                } else {
+                    statusMsg.innerText = "エラー: 4桁のQRではありません (" + code.data + ")";
+                }
+            }
+        }
+        requestAnimationFrame(tick);
+    }
+
+    function handleMatch(number) {
+        resultNum.innerText = "認識: " + number;
+        statusMsg.innerText = "写真を保存しました！";
+        
+        // ファイル名作成 (ゼッケン番号+日時)
+        const d = new Date();
+        const ts = d.getFullYear() +
+            ('0' + (d.getMonth() + 1)).slice(-2) +
+            ('0' + d.getDate()).slice(-2) + "_" +
+            ('0' + d.getHours()).slice(-2) +
+            ('0' + d.getMinutes()).slice(-2) +
+            ('0' + d.getSeconds()).slice(-2);
+        
+        const fileName = `${number}_${ts}.jpeg`;
+
+        // 画像保存（ダウンロード実行）
+        const link = document.createElement('a');
+        link.download = fileName;
+        link.href = canvas.toDataURL('image/jpeg', 0.8);
+        link.click();
+
+        // 視覚的フィードバック（一瞬白く光らせる）
+        video.style.opacity = 0.3;
+        setTimeout(() => video.style.opacity = 1, 100);
+    }
+
+    startCamera();
+</script>
+</body>
+</html>
 
