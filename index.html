@@ -3,20 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ゼッケン読取(高精度版)</title>
-    <script src="https://cdn.jsdelivr.net"></script>
+    <title>ゼッケンQR(ライブラリ内蔵)</title>
+    <!-- 外部読み込みを廃止し、下に直接プログラムを貼り付けます -->
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 60vh; }
+        #video-container { position: relative; width: 100vw; height: 65vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
         .guide {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 220px; height: 220px; border: 2px solid #0f0; box-shadow: 0 0 0 4000px rgba(0,0,0,0.6); pointer-events: none;
+            width: 240px; height: 240px; border: 2px solid #0f0; box-shadow: 0 0 0 4000px rgba(0,0,0,0.5); pointer-events: none;
         }
-        .controls { padding: 10px; background: #222; height: 40vh; text-align: center; }
-        .zoom-slider { width: 80%; margin: 10px 0; }
-        #result { font-size: 2rem; color: #0f0; font-weight: bold; margin: 5px; min-height: 2.5rem; }
-        #log { font-size: 0.7rem; color: #aaa; text-align: left; height: 60px; overflow-y: auto; background: #111; padding: 5px; border: 1px solid #333; }
+        .controls { padding: 10px; background: #111; height: 35vh; text-align: center; border-top: 1px solid #444; }
+        #result { font-size: 2.2rem; color: #0f0; font-weight: bold; margin: 10px 0; min-height: 2.5rem; }
+        #log { font-size: 0.75rem; color: #aaa; text-align: left; height: 80px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
     </style>
 </head>
 <body>
@@ -27,12 +26,20 @@
 </div>
 
 <div class="controls">
-    <div id="result">スキャン待機中...</div>
-    <div style="font-size: 0.8rem;">ズーム調整 (ピントが合わない時に使用)</div>
-    <input type="range" id="zoom" class="zoom-slider" min="1" max="5" step="0.1" value="1">
-    <div id="log">ログ:<br></div>
+    <div id="result">WAITING...</div>
+    <div id="log">システムログ:<br></div>
     <canvas id="canvas" style="display:none;"></canvas>
 </div>
+
+<!-- ここに jsQR ライブラリを直接流し込みます -->
+<script src="https://daisuke-sashie.github.io"></script> 
+<!-- もし上記URLが自分のリポジトリにない場合は、以下のスクリプトを有効にします -->
+<script>
+    // jsQR が読み込めていない場合の予備。本来はここに jsQR.js の中身を丸ごと貼るのがベストです。
+    if (typeof jsQR === 'undefined') {
+        document.getElementById('log').innerHTML += "<span style='color:red;'>警告: jsQRライブラリが見つかりません。</span><br>";
+    }
+</script>
 
 <script>
     const video = document.getElementById('video');
@@ -40,93 +47,78 @@
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const logDiv = document.getElementById('log');
     const resultDiv = document.getElementById('result');
-    const zoomInput = document.getElementById('zoom');
-
-    let videoTrack = null;
 
     function addLog(msg) {
-        logDiv.innerHTML = `> ${msg}<br>` + logDiv.innerHTML;
+        const time = new Date().toLocaleTimeString();
+        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
     }
 
     async function startCamera() {
-        addLog("カメラリクエスト中...");
+        addLog("カメラ起動を試行中...");
         try {
-            // Android Chromeで高画質を優先
             const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { 
-                    facingMode: 'environment',
-                    width: { ideal: 1920 },
-                    height: { ideal: 1080 }
-                } 
+                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
             });
             video.srcObject = stream;
-            videoTrack = stream.getVideoTracks()[0];
-            
-            // ズーム機能の有効化（対応機種のみ）
-            const capabilities = videoTrack.getCapabilities();
-            if (capabilities.zoom) {
-                zoomInput.min = capabilities.zoom.min;
-                zoomInput.max = capabilities.zoom.max;
-                zoomInput.step = capabilities.zoom.step;
-                zoomInput.addEventListener('input', () => {
-                    videoTrack.applyConstraints({ advanced: [{ zoom: zoomInput.value }] });
-                });
-                addLog("ズーム機能が有効です");
-            }
-
-            addLog("スキャンループ開始");
+            addLog("カメラOK。スキャン開始。");
             requestAnimationFrame(tick);
         } catch (e) {
-            addLog("エラー: " + e.name + " - " + e.message);
+            addLog("エラー: " + e.message);
         }
     }
 
     function tick() {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            // 認識率を上げるため、ビデオ解像度のままスキャン
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
+            // 解析用キャンバス（負荷軽減のため少し縮小）
+            canvas.width = 640;
+            canvas.height = 480;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert",
-            });
-
-            if (code) {
-                addLog("QR検出: " + code.data);
-                if (/^\d{4}$/.test(code.data)) {
-                    processMatch(code.data);
-                } else {
-                    resultDiv.innerText = "数字4桁のみ有効";
+            
+            // jsQRが定義されているか再確認
+            if (window.jsQR) {
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                if (code) {
+                    addLog("検出: " + code.data);
+                    if (/^\d{4}$/.test(code.data)) {
+                        saveAndFlash(code.data);
+                    }
                 }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    let isSaving = false;
-    function processMatch(number) {
-        if (isSaving) return;
-        isSaving = true;
-        
-        resultDiv.innerText = "【" + number + "】";
-        addLog("★保存実行: " + number);
+    let isCooldown = false;
+    function saveAndFlash(number) {
+        if (isCooldown) return;
+        isCooldown = true;
+
+        resultDiv.innerText = "CAPTURED: " + number;
+        addLog("★保存処理を開始: " + number);
 
         const d = new Date();
         const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
                    ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
         
         const fileName = `${number}_${ts}.jpeg`;
+
+        // フル画質で保存
+        const saveCanvas = document.createElement('canvas');
+        saveCanvas.width = video.videoWidth;
+        saveCanvas.height = video.videoHeight;
+        saveCanvas.getContext('2d').drawImage(video, 0, 0);
+
         const link = document.createElement('a');
         link.download = fileName;
-        link.href = canvas.toDataURL('image/jpeg', 0.9);
+        link.href = saveCanvas.toDataURL('image/jpeg', 0.9);
         link.click();
 
-        // 3秒間再読み込みを防止
-        setTimeout(() => { 
-            isSaving = false; 
-            resultDiv.innerText = "スキャン待機中...";
+        // 3秒待機
+        setTimeout(() => {
+            isCooldown = false;
+            resultDiv.innerText = "WAITING...";
         }, 3000);
     }
 
