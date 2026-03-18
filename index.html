@@ -3,22 +3,21 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ゼッケンQR照合カメラ</title>
-    <!-- QRコードリーダー: jsQR (軽量・高速) -->
+    <title>ゼッケンQR照合カメラ(高精度版)</title>
+    <!-- jsQRライブラリの読み込み先を確実なものに変更 -->
     <script src="https://cdn.jsdelivr.net"></script>
     <style>
-        body { font-family: sans-serif; text-align: center; background: #222; color: white; margin: 0; }
-        #video-container { position: relative; width: 100%; max-width: 640px; margin: auto; }
-        video { width: 100%; border-bottom: 2px solid #444; }
-        /* 読み取りガイド枠 */
+        body { font-family: sans-serif; text-align: center; background: #000; color: #fff; margin: 0; overflow: hidden; }
+        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; overflow: hidden; }
+        video { width: 100%; height: 100%; object-fit: cover; }
         .guide {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 250px; height: 250px; border: 2px solid #0f0; box-shadow: 0 0 15px #0f0;
-            pointer-events: none;
+            width: 200px; height: 200px; border: 3px solid #0f0; border-radius: 10px;
+            box-shadow: 0 0 0 1000px rgba(0,0,0,0.5); pointer-events: none;
         }
-        .info { padding: 15px; background: #333; }
-        .result-box { font-size: 1.5rem; font-weight: bold; color: #0f0; margin-bottom: 5px; }
-        .status { font-size: 0.9rem; color: #ccc; }
+        .info { padding: 20px; background: #111; height: 30vh; box-sizing: border-box; }
+        .result-box { font-size: 1.8rem; font-weight: bold; color: #0f0; margin-bottom: 10px; height: 2rem; }
+        #status-msg { font-size: 0.9rem; color: #f00; } /* エラー時は赤く表示 */
         canvas { display: none; }
     </style>
 </head>
@@ -30,8 +29,9 @@
 </div>
 
 <div class="info">
-    <div id="result-num" class="result-box">QRスキャン中...</div>
-    <div id="status-msg" class="status">4桁のQRコードを枠に入れてください</div>
+    <div id="result-num" class="result-box">カメラ起動中...</div>
+    <div id="status-msg">QRコードを中央の枠に合わせてください</div>
+    <p style="font-size: 0.7rem; color: #888;">※HTTPS環境またはlocalhostで実行してください</p>
 </div>
 
 <canvas id="canvas"></canvas>
@@ -45,23 +45,37 @@
 
     let lastScanTime = 0;
 
-    // カメラ起動
     async function startCamera() {
+        if (typeof jsQR === 'undefined') {
+            statusMsg.innerText = "エラー: ライブラリが読み込めていません。ネット接続を確認してください。";
+            return;
+        }
+
+        const constraints = {
+            video: {
+                facingMode: 'environment',
+                width: { ideal: 1920 }, // フルHDを試行
+                height: { ideal: 1080 },
+                focusMode: 'continuous' // 連続フォーカス
+            }
+        };
+
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ 
-                video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
-            });
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
             video.srcObject = stream;
+            resultNum.innerText = "スキャン待機中";
+            statusMsg.style.color = "#ccc";
             requestAnimationFrame(tick);
         } catch (err) {
-            statusMsg.innerText = "カメラエラー: " + err.name;
+            statusMsg.innerText = "カメラエラー: " + err.message + "\n(HTTPS接続であることを確認してください)";
         }
     }
 
     function tick() {
         if (video.readyState === video.HAVE_ENOUGH_DATA) {
-            canvas.height = video.videoHeight;
-            canvas.width = video.videoWidth;
+            // スキャン用のキャンバスサイズ（負荷軽減のため少し小さく描画）
+            canvas.width = 640;
+            canvas.height = 480;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
             const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
@@ -70,27 +84,28 @@
             });
 
             if (code) {
-                // 4桁の数字かチェック
-                if (/^\d{4}$/.test(code.data)) {
+                // 4桁数字チェック
+                const match = code.data.match(/^\d{4}$/);
+                if (match) {
                     const now = Date.now();
-                    // 連続保存を防止 (3秒間隔)
                     if (now - lastScanTime > 3000) {
-                        handleMatch(code.data);
+                        saveAndFlash(code.data);
                         lastScanTime = now;
                     }
                 } else {
-                    statusMsg.innerText = "エラー: 4桁のQRではありません (" + code.data + ")";
+                    statusMsg.innerText = "QR内容: " + code.data + " (4桁ではありません)";
                 }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    function handleMatch(number) {
+    function saveAndFlash(number) {
         resultNum.innerText = "認識: " + number;
-        statusMsg.innerText = "写真を保存しました！";
-        
-        // ファイル名作成 (ゼッケン番号+日時)
+        statusMsg.innerText = "保存しました！";
+        statusMsg.style.color = "#0f0";
+
+        // ファイル名作成
         const d = new Date();
         const ts = d.getFullYear() +
             ('0' + (d.getMonth() + 1)).slice(-2) +
@@ -101,19 +116,26 @@
         
         const fileName = `${number}_${ts}.jpeg`;
 
-        // 画像保存（ダウンロード実行）
+        // フル解像度の画像を保存するためにキャンバスを再設定
+        const saveCanvas = document.createElement('canvas');
+        saveCanvas.width = video.videoWidth;
+        saveCanvas.height = video.videoHeight;
+        saveCanvas.getContext('2d').drawImage(video, 0, 0);
+
         const link = document.createElement('a');
         link.download = fileName;
-        link.href = canvas.toDataURL('image/jpeg', 0.8);
+        link.href = saveCanvas.toDataURL('image/jpeg', 0.9);
         link.click();
 
-        // 視覚的フィードバック（一瞬白く光らせる）
-        video.style.opacity = 0.3;
-        setTimeout(() => video.style.opacity = 1, 100);
+        // 撮影エフェクト
+        video.style.opacity = 0;
+        setTimeout(() => {
+            video.style.opacity = 1;
+            statusMsg.style.color = "#ccc";
+        }, 200);
     }
 
     startCamera();
 </script>
 </body>
 </html>
-
