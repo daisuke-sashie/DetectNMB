@@ -3,21 +3,16 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ゼッケン自動検知システム</title>
+    <title>複数ゼッケン同時検知システム</title>
     <script src="jsQR.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 75vh; }
+        #video-container { position: relative; width: 100vw; height: 70vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        /* どこでも検知することを強調するため枠を広めに変更 */
-        .guide {
-            position: absolute; top: 10%; left: 10%; width: 80%; height: 80%;
-            border: 1px dashed rgba(0, 255, 0, 0.3); pointer-events: none;
-        }
-        .status-panel { padding: 10px; background: #111; height: 25vh; border-top: 2px solid #333; text-align: center; }
-        #result-val { font-size: 2.5rem; color: #0f0; font-weight: bold; margin-bottom: 5px; }
-        #log { font-size: 0.75rem; color: #888; text-align: left; height: 60px; overflow-y: auto; background: #000; padding: 5px; }
-        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
+        .info-panel { padding: 10px; background: #111; height: 30vh; border-top: 2px solid #444; }
+        #detect-list { font-size: 1.2rem; color: #0f0; font-weight: bold; margin-bottom: 5px; min-height: 1.5rem; }
+        #log { font-size: 0.75rem; color: #888; text-align: left; height: 100px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
+        #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; transition: opacity 0.1s; }
     </style>
 </head>
 <body>
@@ -25,11 +20,10 @@
 <div id="flash"></div>
 <div id="video-container">
     <video id="video" autoplay playsinline></video>
-    <div class="guide"></div>
 </div>
 
-<div class="status-panel">
-    <div id="result-val">SCANNING...</div>
+<div class="info-panel">
+    <div id="detect-list">検知待機中...</div>
     <div id="log">ログ:<br></div>
 </div>
 
@@ -40,17 +34,20 @@
     const scanCanvas = document.getElementById('scan-canvas');
     const scanCtx = scanCanvas.getContext('2d', { willReadFrequently: true });
     const logDiv = document.getElementById('log');
-    const resultVal = document.getElementById('result-val');
+    const detectListDiv = document.getElementById('detect-list');
     const flash = document.getElementById('flash');
 
-    let isProcessing = false;
+    // 重複保存を防ぐための管理用オブジェクト { 番号: 最後に保存した時間 }
+    const savedLog = {};
+    const COOL_DOWN_MS = 5000; // 同じ番号は5秒間再保存しない
 
     function addLog(msg) {
-        logDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logDiv.innerHTML;
+        const time = new Date().toLocaleTimeString();
+        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
     }
 
     async function init() {
-        addLog("カメラをフル画面スキャンモードで開始...");
+        addLog("複数同時検知モード開始...");
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
@@ -58,58 +55,55 @@
             video.srcObject = stream;
             requestAnimationFrame(tick);
         } catch (e) {
-            addLog("カメラエラー: " + e.message);
+            addLog("エラー: " + e.message);
         }
     }
 
     function tick() {
-        if (video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing) {
-            // 映像全体をスキャン対象にする
+        if (video.readyState === video.HAVE_ENOUGH_DATA) {
             scanCanvas.width = video.videoWidth;
             scanCanvas.height = video.videoHeight;
             scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
             
             const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
-            const code = jsQR(imageData.data, imageData.width, imageData.height, {
-                inversionAttempts: "dontInvert"
-            });
+            
+            // jsQRは一度に1つのQRしか返さないため、
+            // 実際には映像内に複数のQRがある場合、フレームごとに異なるQRを拾う特性を利用します。
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
 
-            // 4桁の数字QRを検知した場合
             if (code && /^\d{4}$/.test(code.data)) {
-                autoCapture(code.data);
+                const now = Date.now();
+                const lastSaved = savedLog[code.data] || 0;
+
+                // 未保存、またはクールダウン期間を過ぎている場合のみ保存
+                if (now - lastSaved > COOL_DOWN_MS) {
+                    executeCapture(code.data);
+                    savedLog[code.data] = now;
+                }
             }
         }
         requestAnimationFrame(tick);
     }
 
-    function autoCapture(number) {
-        isProcessing = true; // 連続撮影防止ロック
-        
-        resultVal.innerText = "DETECTED: " + number;
-        addLog(`★検知成功: ${number} 画像を生成中...`);
+    function executeCapture(number) {
+        detectListDiv.innerText = "CAPTURED: " + number;
+        addLog(`★新規検知保存: ${number}`);
 
-        // 視覚的エフェクト（シャッター）
-        flash.style.opacity = 1;
-        setTimeout(() => flash.style.opacity = 0, 200);
+        // シャッターエフェクト
+        flash.style.opacity = 0.5;
+        setTimeout(() => flash.style.opacity = 0, 100);
 
-        // ファイル名作成
         const d = new Date();
         const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
                    ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
+        
         const fileName = `${number}_${ts}.jpeg`;
 
-        // 映像全体を保存（検知した瞬間の静止画）
+        // 検知した瞬間の映像全体を保存
         const link = document.createElement('a');
         link.download = fileName;
-        link.href = scanCanvas.toDataURL('image/jpeg', 0.9);
+        link.href = scanCanvas.toDataURL('image/jpeg', 0.8);
         link.click();
-
-        // 3秒間クールダウン（同じ人を連続で撮り続けないように）
-        setTimeout(() => {
-            isProcessing = false;
-            resultVal.innerText = "SCANNING...";
-            addLog("スキャンを再開しました");
-        }, 3000);
     }
 
     init();
