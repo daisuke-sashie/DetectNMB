@@ -3,26 +3,26 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ゼッケン照合システム</title>
+    <title>ゼッケン照合撮影システム</title>
     <script src="jsQR.js"></script>
     <style>
-        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
+        body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; touch-action: manipulation; }
         #video-container { position: relative; width: 100vw; height: 60vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        .guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 220px; height: 220px; border: 2px solid #0f0; pointer-events: none; }
+        .guide { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 220px; height: 220px; border: 2px solid #0f0; pointer-events: none; opacity: 0.5; }
         .info-panel { padding: 10px; background: #111; height: 40vh; border-top: 2px solid #444; box-sizing: border-box; }
         .event-setting { display: flex; gap: 8px; margin-bottom: 10px; }
         #event-input { flex: 1; padding: 12px; border-radius: 4px; border: 1px solid #888; background: #000; color: #fff; font-size: 1rem; }
         #set-btn { padding: 10px 20px; background: #28a745; color: white; border: none; border-radius: 4px; font-weight: bold; }
-        #detect-list { font-size: 2.8rem; color: #0f0; font-weight: bold; text-align: center; min-height: 3.2rem; }
-        #sub-log { font-size: 0.8rem; color: #aaa; text-align: center; line-height: 1.4; }
+        #detect-list { font-size: 2.8rem; color: #0f0; font-weight: bold; text-align: center; min-height: 3.2rem; margin-top: 5px; }
+        #sub-log { font-size: 0.8rem; color: #aaa; text-align: center; line-height: 1.4; height: 3em; overflow: hidden; }
         #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
     </style>
 </head>
 <body>
 
 <div id="flash"></div>
-<div id="video-container">
+<div id="video-container" onclick="refocus()">
     <video id="video" autoplay playsinline></video>
     <div class="guide"></div>
 </div>
@@ -32,7 +32,7 @@
         <input type="text" id="event-input" placeholder="照合する大会名を入力">
         <button id="set-btn">設定</button>
     </div>
-    <div id="detect-list">READY</div>
+    <div id="detect-list">WAITING</div>
     <div id="sub-log">大会名を入力して「設定」を押してください</div>
 </div>
 
@@ -52,18 +52,29 @@
     const savedLog = {};
     const COOL_DOWN_MS = 5000;
     let audioCtx = null;
+    let videoTrack = null;
 
+    // 設定ボタン
     setBtn.addEventListener('click', () => {
         const val = eventInput.value.trim();
         if (val === "") { alert("大会名を入力してください"); return; }
         
+        // 音声制限解除
         if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
         if (audioCtx.state === 'suspended') audioCtx.resume();
         
         targetEvent = val;
-        subLog.innerHTML = `照合中: <span style="color:#0f0">${targetEvent}</span><br>QR内の大会名と一致時のみ保存します`;
+        subLog.innerHTML = `照合中: <span style="color:#0f0">${targetEvent}</span><br>QR内にこの文字が含まれる時のみ保存`;
+        detectListDiv.innerText = "READY";
         playBeep();
     });
+
+    // タップでフォーカス
+    async function refocus() {
+        if (videoTrack && videoTrack.applyConstraints) {
+            try { await videoTrack.applyConstraints({ advanced: [{ focusMode: "continuous" }] }); } catch (e) {}
+        }
+    }
 
     function playBeep() {
         if (!audioCtx) return;
@@ -90,13 +101,15 @@
                 video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
             });
             video.srcObject = stream;
+            videoTrack = stream.getVideoTracks()[0];
             requestAnimationFrame(tick);
-        } catch (e) { alert("カメラ起動エラー: " + e.message); }
+        } catch (e) { alert("カメラエラー: " + e.message); }
     }
 
     function tick() {
+        // 大会名が設定されている場合のみ解析
         if (video.readyState === video.HAVE_ENOUGH_DATA && targetEvent !== "") {
-            // スキャン用
+            // 解析用解像度を固定して高速化
             scanCanvas.width = 640;
             scanCanvas.height = 480;
             scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
@@ -105,13 +118,12 @@
             const code = jsQR(imageData.data, imageData.width, imageData.height);
 
             if (code) {
-                const qrContent = code.data; // 例: "大会名1234"
+                const qrContent = code.data;
                 
-                // 1. QRの中に「設定した大会名」が含まれているかチェック
+                // 大会名の照合
                 if (qrContent.includes(targetEvent)) {
-                    // 2. その中から数字4桁を抽出
+                    // 数字4桁の抽出
                     const numMatch = qrContent.match(/\d{4}/);
-                    
                     if (numMatch) {
                         const bibNumber = numMatch[0];
                         const now = Date.now();
@@ -121,7 +133,7 @@
                             handleDetection(bibNumber);
                         }
                     } else {
-                        subLog.innerText = "大会名は一致しましたが、数字4桁がありません";
+                        subLog.innerText = "一致: " + qrContent + " (数字なし)";
                     }
                 } else {
                     subLog.innerText = "不一致: " + qrContent;
@@ -139,22 +151,30 @@
         flash.style.opacity = 0.4;
         setTimeout(() => flash.style.opacity = 0, 100);
 
-        // 保存用（フル解像度）
+        // 保存用（元のビデオ画質で作成）
         const saveCanvas = document.createElement('canvas');
         saveCanvas.width = video.videoWidth;
         saveCanvas.height = video.videoHeight;
         saveCanvas.getContext('2d').drawImage(video, 0, 0);
 
+        // 日時(YYYYMMDD_HHMMSS)
         const d = new Date();
-        const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
-                   ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
+        const ts = d.getFullYear() +
+                   ('0' + (d.getMonth() + 1)).slice(-2) +
+                   ('0' + d.getDate()).slice(-2) + "_" +
+                   ('0' + d.getHours()).slice(-2) +
+                   ('0' + d.getMinutes()).slice(-2) +
+                   ('0' + d.getSeconds()).slice(-2);
         
+        // 規則：大会名_番号_日時.jpeg
         const fileName = `${targetEvent}_${number}_${ts}.jpeg`;
+
         const link = document.createElement('a');
         link.download = fileName;
         link.href = saveCanvas.toDataURL('image/jpeg', 0.8);
         link.click();
 
+        subLog.innerText = "保存: " + fileName;
         speakNumber(number);
     }
 
