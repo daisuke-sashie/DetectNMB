@@ -3,15 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>ゼッケン音声読取システム</title>
+    <title>ゼッケン読取(大会名設定版)</title>
     <script src="jsQR.js"></script>
     <style>
         body { margin: 0; background: #000; color: #fff; font-family: sans-serif; overflow: hidden; }
-        #video-container { position: relative; width: 100vw; height: 65vh; background: #222; }
+        #video-container { position: relative; width: 100vw; height: 60vh; background: #222; }
         video { width: 100%; height: 100%; object-fit: cover; }
-        .info-panel { padding: 10px; background: #111; height: 35vh; border-top: 2px solid #444; box-sizing: border-box; }
-        #detect-list { font-size: 2rem; color: #0f0; font-weight: bold; margin-bottom: 5px; height: 3rem; text-align: center; }
-        #log { font-size: 0.75rem; color: #888; text-align: left; height: 120px; overflow-y: auto; background: #000; padding: 8px; border: 1px solid #333; }
+        .info-panel { padding: 10px; background: #111; height: 40vh; border-top: 2px solid #444; box-sizing: border-box; overflow-y: auto; }
+        
+        /* 大会名設定エリア */
+        .event-setting { display: flex; gap: 5px; margin-bottom: 10px; background: #222; padding: 8px; border-radius: 5px; }
+        #event-input { flex: 1; padding: 8px; border-radius: 4px; border: 1px solid #444; background: #000; color: #fff; }
+        #set-btn { padding: 8px 15px; background: #007bff; color: white; border: none; border-radius: 4px; font-weight: bold; }
+        
+        #current-event { font-size: 0.8rem; color: #aaa; margin-bottom: 5px; }
+        #detect-list { font-size: 2.2rem; color: #0f0; font-weight: bold; text-align: center; min-height: 2.8rem; }
+        #log { font-size: 0.7rem; color: #888; text-align: left; height: 80px; overflow-y: auto; background: #000; padding: 5px; border: 1px solid #333; }
         #flash { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: #fff; opacity: 0; pointer-events: none; z-index: 100; }
     </style>
 </head>
@@ -23,6 +30,11 @@
 </div>
 
 <div class="info-panel">
+    <div class="event-setting">
+        <input type="text" id="event-input" placeholder="大会名を入力 (例: 第1回マラソン)">
+        <button id="set-btn">設定</button>
+    </div>
+    <div id="current-event">大会名: 未設定</div>
     <div id="detect-list">READY</div>
     <div id="log">ログ:<br></div>
 </div>
@@ -36,50 +48,60 @@
     const logDiv = document.getElementById('log');
     const detectListDiv = document.getElementById('detect-list');
     const flash = document.getElementById('flash');
+    
+    const eventInput = document.getElementById('event-input');
+    const currentEventDiv = document.getElementById('current-event');
+    const setBtn = document.getElementById('set-btn');
 
+    let eventName = "Event"; // デフォルト
     const savedLog = {};
-    const COOL_DOWN_MS = 8000; // 同じ番号の再送防止（音声が重ならないよう長めに設定）
-
-    // オーディオ設定
+    const COOL_DOWN_MS = 5000;
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
+    // 大会名設定ボタン
+    setBtn.addEventListener('click', () => {
+        if (eventInput.value.trim() !== "") {
+            eventName = eventInput.value.trim();
+            currentEventDiv.innerText = "大会名: " + eventName;
+            addLog("大会名を変更しました: " + eventName);
+            // 音声制限解除を兼ねる
+            if (audioCtx.state === 'suspended') audioCtx.resume();
+        }
+    });
+
     function addLog(msg) {
-        logDiv.innerHTML = `[${new Date().toLocaleTimeString()}] ${msg}<br>` + logDiv.innerHTML;
+        const time = new Date().toLocaleTimeString();
+        logDiv.innerHTML = `[${time}] ${msg}<br>` + logDiv.innerHTML;
     }
 
-    // ビープ音を鳴らす関数
     function playBeep() {
         const osc = audioCtx.createOscillator();
         const gain = audioCtx.createGain();
-        osc.connect(gain);
-        gain.connect(audioCtx.destination);
-        osc.type = 'sine';
-        osc.frequency.value = 880; // A5
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.frequency.value = 880;
         gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
         osc.start();
         gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
         osc.stop(audioCtx.currentTime + 0.1);
     }
 
-    // 番号を読み上げる関数
+    // 番号のみ読み上げる
     function speakNumber(number) {
         const uttr = new SpeechSynthesisUtterance(number);
         uttr.lang = 'ja-JP';
-        uttr.rate = 1.2; // 少し早めに読み上げ
+        uttr.rate = 1.2;
         window.speechSynthesis.speak(uttr);
     }
 
     async function init() {
-        addLog("システム起動中...");
         try {
             const stream = await navigator.mediaDevices.getUserMedia({ 
                 video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
             });
             video.srcObject = stream;
-            addLog("カメラと音声準備完了。");
             requestAnimationFrame(tick);
         } catch (e) {
-            addLog("エラー: " + e.message);
+            addLog("カメラエラー: " + e.message);
         }
     }
 
@@ -88,7 +110,6 @@
             scanCanvas.width = video.videoWidth;
             scanCanvas.height = video.videoHeight;
             scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
-            
             const imageData = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
             const code = jsQR(imageData.data, imageData.width, imageData.height);
 
@@ -105,31 +126,30 @@
 
     function handleDetection(number) {
         detectListDiv.innerText = number;
-        addLog(`★検知: ${number}`);
-
-        // 1. 即座にビープ音
+        
+        // 1. 効果音
         playBeep();
 
-        // 2. シャッターエフェクト
+        // 2. フラッシュ
         flash.style.opacity = 0.4;
         setTimeout(() => flash.style.opacity = 0, 100);
 
-        // 3. 画像保存
-        const fileName = `${number}_${new Date().getTime()}.jpeg`;
+        // 3. 画像保存 (大会名＋番号＋日時)
+        const d = new Date();
+        const ts = d.getFullYear() + ('0' + (d.getMonth() + 1)).slice(-2) + ('0' + d.getDate()).slice(-2) + "_" +
+                   ('0' + d.getHours()).slice(-2) + ('0' + d.getMinutes()).slice(-2) + ('0' + d.getSeconds()).slice(-2);
+        
+        const fileName = `${eventName}_${number}_${ts}.jpeg`;
         const link = document.createElement('a');
         link.download = fileName;
         link.href = scanCanvas.toDataURL('image/jpeg', 0.8);
         link.click();
 
-        // 4. 音声読み上げ（キューに入るので複数でも順番に話します）
+        addLog(`保存: ${fileName}`);
+
+        // 4. 音声読み上げ（番号のみ）
         speakNumber(number);
     }
-
-    // Android/iOSでの音声再生制限解除のため、画面タップでオーディオを有効化
-    document.body.addEventListener('click', () => {
-        audioCtx.resume();
-        addLog("オーディオ有効化済み");
-    }, { once: true });
 
     init();
 </script>
